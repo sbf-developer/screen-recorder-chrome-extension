@@ -1,9 +1,5 @@
 const DEFAULT_STATE = { status: 'idle', timer: '00:00', progress: '', error: '', startedAt: 0 };
 
-let offscreenPort = null;
-let popupPort = null;
-let bridged = false;
-
 async function getState() {
   const { recorderState } = await chrome.storage.session.get('recorderState');
   return recorderState || DEFAULT_STATE;
@@ -16,68 +12,33 @@ async function setState(partial) {
   return next;
 }
 
+let creating = null;
 async function ensureOffscreen() {
-  const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
-  if (contexts.length > 0) return;
+  const existing = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+  if (existing.length > 0) return;
 
-  await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: ['DISPLAY_MEDIA', 'WORKERS', 'USER_MEDIA'],
-    justification: 'Persist screen recording and convert to MP4',
-  });
+  if (creating) await creating;
+  else {
+    creating = chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['DISPLAY_MEDIA', 'USER_MEDIA', 'WORKERS'],
+      justification: 'Record screen and convert to MP4',
+    });
+    try { await creating; } finally { creating = null; }
+  }
 
-  for (let i = 0; i < 20; i++) {
-    if (offscreenPort) return;
+  for (let i = 0; i < 40; i++) {
     try {
-      await chrome.runtime.sendMessage({ target: 'offscreen', action: 'PING' });
-      if (offscreenPort) return;
+      const ok = await chrome.runtime.sendMessage({ target: 'offscreen', action: 'PING' });
+      if (ok?.ok) return;
     } catch { /* not ready */ }
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error('Recorder failed to start.');
 }
 
-function bridgePorts() {
-  if (!popupPort || !offscreenPort || bridged) return;
-  bridged = true;
-
-  popupPort.onMessage.addListener((msg) => {
-    if (!offscreenPort) return;
-    offscreenPort.postMessage(msg, msg.tracks || []);
-  });
-
-  offscreenPort.onMessage.addListener((msg) => {
-    if (popupPort) popupPort.postMessage(msg);
-  });
-
-  try {
-    popupPort.postMessage({ action: 'BRIDGE_READY' });
-  } catch { /* popup gone */ }
-}
-
 chrome.runtime.onInstalled.addListener(async () => {
   await setState(DEFAULT_STATE);
-});
-
-chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === 'recorder-offscreen') {
-    offscreenPort = port;
-    offscreenPort.onDisconnect.addListener(() => {
-      offscreenPort = null;
-      bridged = false;
-    });
-    bridgePorts();
-    return;
-  }
-
-  if (port.name === 'recorder') {
-    popupPort = port;
-    popupPort.onDisconnect.addListener(() => {
-      popupPort = null;
-      bridged = false;
-    });
-    bridgePorts();
-  }
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -106,8 +67,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === 'ENSURE_OFFSCREEN') {
-    ensureOffscreen().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: e.message }));
+  if (message.type === 'START_RECORDING') {
+    ensureOffscreen()
+      .then(() => chrome.runtime.sendMessage({ target: 'offscreen', action: 'START', includeMic: !!message.includeMic }))
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  if (message.type === 'STOP_RECORDING') {
+    chrome.runtime.sendMessage({ target: 'offscreen', action: 'STOP' }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.type === 'RESET') {
+    chrome.runtime.sendMessage({ target: 'offscreen', action: 'RESET' }).catch(() => {});
+    setState({ status: 'idle', timer: '00:00', progress: '', error: '', startedAt: 0 });
+    chrome.action.setBadgeText({ text: '' });
+    sendResponse({ ok: true });
     return true;
   }
 

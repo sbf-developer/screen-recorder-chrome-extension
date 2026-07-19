@@ -39,115 +39,25 @@ function applyUpdate(update) {
   }
 }
 
-async function mixAudio(screen, mic) {
-  const ctx = new AudioContext();
-  const dest = ctx.createMediaStreamDestination();
-  const sa = screen.getAudioTracks()[0];
-  if (sa) ctx.createMediaStreamSource(new MediaStream([sa])).connect(dest);
-  const ma = mic?.getAudioTracks()[0];
-  if (ma) ctx.createMediaStreamSource(new MediaStream([ma])).connect(dest);
-  return dest.stream;
-}
-
-async function buildCaptureStream(includeMic) {
-  const screenStream = await navigator.mediaDevices.getDisplayMedia({
-    video: { frameRate: { ideal: 30, max: 60 } },
-    audio: true,
-  });
-
-  let micStream = null;
-  if (includeMic) {
-    try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      micStream = null;
-    }
-  }
-
-  const video = screenStream.getVideoTracks()[0];
-  const hasSA = screenStream.getAudioTracks().length > 0;
-  const hasMA = micStream?.getAudioTracks().length > 0;
-  const tracks = [video];
-
-  if (hasSA && hasMA) {
-    const mixed = await mixAudio(screenStream, micStream);
-    tracks.push(...mixed.getAudioTracks());
-  } else if (hasMA) {
-    tracks.push(...micStream.getAudioTracks());
-  } else {
-    tracks.push(...screenStream.getAudioTracks());
-  }
-
-  screenStream.getAudioTracks().forEach((t) => {
-    if (!tracks.includes(t)) t.stop();
-  });
-  if (micStream) {
-    micStream.getAudioTracks().forEach((t) => {
-      if (!tracks.includes(t)) t.stop();
-    });
-  }
-
-  return tracks;
-}
-
-function sendTracksToOffscreen(tracks) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const port = chrome.runtime.connect({ name: 'recorder' });
-
-    const finish = (fn) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      fn();
-    };
-
-    const timer = setTimeout(() => {
-      finish(() => reject(new Error('Recorder did not respond in time.')));
-    }, 8000);
-
-    port.onMessage.addListener(function onReply(res) {
-      if (res?.action === 'BRIDGE_READY') {
-        port.postMessage({ action: 'START_STREAM', tracks }, tracks);
-        return;
+function startRecording() {
+  showState('picking');
+  chrome.runtime.sendMessage(
+    { type: 'START_RECORDING', includeMic: micToggle.checked },
+    (res) => {
+      if (!res?.ok) {
+        applyUpdate({ status: 'error', error: res?.error || 'Could not start recorder.' });
       }
-      if (res?.action === 'START_RESULT') {
-        if (res.ok) finish(() => resolve());
-        else finish(() => reject(new Error(res.error || 'Could not start background recorder.')));
-      }
-    });
-
-    port.onDisconnect.addListener(() => {
-      finish(() => reject(new Error(chrome.runtime.lastError?.message || 'Recorder connection lost.')));
-    });
-  });
-}
-
-async function startRecording() {
-  chrome.runtime.sendMessage({ type: 'RECORDER_UPDATE', status: 'picking' });
-
-  let tracks = null;
-  try {
-    await chrome.runtime.sendMessage({ type: 'ENSURE_OFFSCREEN' });
-    tracks = await buildCaptureStream(micToggle.checked);
-    await sendTracksToOffscreen(tracks);
-  } catch (err) {
-    tracks?.forEach((t) => t.stop());
-    if (err.name === 'NotAllowedError') {
-      applyUpdate({ status: 'error', error: 'Screen sharing was cancelled.' });
-    } else {
-      applyUpdate({ status: 'error', error: err.message || 'Could not start recording.' });
     }
-  }
+  );
 }
 
 function stopRecording() {
-  chrome.runtime.sendMessage({ target: 'offscreen', action: 'STOP' });
+  chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
   applyUpdate({ status: 'processing', progress: 'Preparing MP4…' });
 }
 
 function resetToIdle() {
-  chrome.runtime.sendMessage({ target: 'offscreen', action: 'RESET' });
+  chrome.runtime.sendMessage({ type: 'RESET' });
   showState('idle');
 }
 
@@ -163,9 +73,8 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 chrome.runtime.sendMessage({ type: 'GET_STATE' }, (state) => {
   if (!state) return;
-  // 'picking' is transient; if we open into it, it's stale from a prior session.
   if (state.status === 'picking') {
-    chrome.runtime.sendMessage({ target: 'offscreen', action: 'RESET' });
+    chrome.runtime.sendMessage({ type: 'RESET' });
     applyUpdate({ status: 'idle' });
   } else {
     applyUpdate(state);

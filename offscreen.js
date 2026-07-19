@@ -10,17 +10,19 @@ const MIME_CANDIDATES = [
 
 let mediaRecorder = null;
 let recordedChunks = [];
+let screenStream = null;
+let micStream = null;
 let combinedStream = null;
 let timerInterval = null;
 let startTime = null;
 let selectedMimeType = '';
 
 function broadcast(update) {
-  chrome.runtime.sendMessage({ type: 'RECORDER_UPDATE', ...update });
+  chrome.runtime.sendMessage({ type: 'RECORDER_UPDATE', ...update }).catch(() => {});
 }
 
 function setBadge(text) {
-  chrome.runtime.sendMessage({ type: 'SET_BADGE', text });
+  chrome.runtime.sendMessage({ type: 'SET_BADGE', text }).catch(() => {});
 }
 
 function getSupportedMimeType() {
@@ -28,8 +30,10 @@ function getSupportedMimeType() {
 }
 
 function cleanupStreams() {
-  combinedStream?.getTracks().forEach((t) => t.stop());
-  combinedStream = null;
+  [combinedStream, screenStream, micStream].forEach((s) => {
+    s?.getTracks().forEach((t) => t.stop());
+  });
+  combinedStream = screenStream = micStream = null;
 }
 
 function formatTimer(ms) {
@@ -41,45 +45,85 @@ function startTimerLoop() {
   clearInterval(timerInterval);
   timerInterval = setInterval(() => {
     if (!startTime) return;
-    broadcast({
-      status: 'recording',
-      timer: formatTimer(Date.now() - startTime),
-      startedAt: startTime,
-    });
+    broadcast({ status: 'recording', timer: formatTimer(Date.now() - startTime), startedAt: startTime });
   }, 500);
 }
 
-async function beginRecording(stream) {
-  selectedMimeType = getSupportedMimeType();
-  if (!selectedMimeType) throw new Error('No supported video format.');
+async function mixAudio(screen, mic) {
+  const ctx = new AudioContext();
+  const dest = ctx.createMediaStreamDestination();
+  const sa = screen.getAudioTracks()[0];
+  if (sa) ctx.createMediaStreamSource(new MediaStream([sa])).connect(dest);
+  const ma = mic?.getAudioTracks()[0];
+  if (ma) ctx.createMediaStreamSource(new MediaStream([ma])).connect(dest);
+  return dest.stream;
+}
 
-  combinedStream = stream;
-  recordedChunks = [];
+async function startRecording(includeMic) {
+  try {
+    selectedMimeType = getSupportedMimeType();
+    if (!selectedMimeType) throw new Error('No supported video format.');
 
-  const video = stream.getVideoTracks()[0];
-  video?.addEventListener('ended', () => {
-    if (mediaRecorder?.state === 'recording') stopRecording();
-  });
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30, max: 60 } },
+      audio: true,
+    });
 
-  mediaRecorder = new MediaRecorder(stream, {
-    mimeType: selectedMimeType,
-    videoBitsPerSecond: 2_500_000,
-  });
+    if (includeMic) {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        micStream = null;
+      }
+    }
 
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) recordedChunks.push(e.data);
-  };
+    const video = screenStream.getVideoTracks()[0];
+    const hasSA = screenStream.getAudioTracks().length > 0;
+    const hasMA = micStream?.getAudioTracks().length > 0;
+    let audioTracks = [];
 
-  mediaRecorder.onstop = () => {
+    if (hasSA && hasMA) {
+      const mixed = await mixAudio(screenStream, micStream);
+      audioTracks = mixed.getAudioTracks();
+    } else if (hasMA) {
+      audioTracks = micStream.getAudioTracks();
+    } else {
+      audioTracks = screenStream.getAudioTracks();
+    }
+
+    combinedStream = new MediaStream([video, ...audioTracks]);
+
+    video.addEventListener('ended', () => {
+      if (mediaRecorder?.state === 'recording') stopRecording();
+    });
+
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(combinedStream, {
+      mimeType: selectedMimeType,
+      videoBitsPerSecond: 2_500_000,
+    });
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordedChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = () => {
+      cleanupStreams();
+      finishRecording();
+    };
+
+    mediaRecorder.start(1000);
+    startTime = Date.now();
+    startTimerLoop();
+    setBadge('REC');
+    broadcast({ status: 'recording', timer: '00:00', error: '', progress: '', startedAt: startTime });
+  } catch (err) {
     cleanupStreams();
-    finishRecording();
-  };
-
-  mediaRecorder.start(1000);
-  startTime = Date.now();
-  startTimerLoop();
-  setBadge('REC');
-  broadcast({ status: 'recording', timer: '00:00', error: '', progress: '', startedAt: startTime });
+    const msg = err.name === 'NotAllowedError'
+      ? 'Screen sharing was cancelled.'
+      : (err.message || 'Could not start recording.');
+    broadcast({ status: 'error', error: msg });
+  }
 }
 
 function stopRecording() {
@@ -136,41 +180,14 @@ async function finishRecording() {
   }
 }
 
-let bridge = null;
-
-function connectBridge() {
-  bridge = chrome.runtime.connect({ name: 'recorder-offscreen' });
-
-  bridge.onMessage.addListener(async (msg) => {
-    if (msg.action !== 'START_STREAM') return;
-
-    try {
-      const tracks = msg.tracks || [];
-      if (!tracks.length) throw new Error('No media tracks received.');
-      await beginRecording(new MediaStream(tracks));
-      bridge?.postMessage({ action: 'START_RESULT', ok: true });
-    } catch (err) {
-      broadcast({ status: 'error', error: err.message || 'Could not start recording.' });
-      bridge?.postMessage({ action: 'START_RESULT', ok: false, error: err.message });
-    }
-  });
-
-  // SW may restart; reconnect to restore messaging. Recording keeps running.
-  bridge.onDisconnect.addListener(() => {
-    bridge = null;
-    setTimeout(connectBridge, 300);
-  });
-}
-
-connectBridge();
-
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== 'offscreen') return;
 
-  if (msg.action === 'STOP') {
-    stopRecording();
+  if (msg.action === 'START') {
+    startRecording(msg.includeMic);
     sendResponse({ ok: true });
-  } else if (msg.action === 'PING') {
+  } else if (msg.action === 'STOP') {
+    stopRecording();
     sendResponse({ ok: true });
   } else if (msg.action === 'RESET') {
     cleanupStreams();
@@ -179,6 +196,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     clearInterval(timerInterval);
     setBadge('');
     broadcast({ status: 'idle', timer: '00:00', progress: '', error: '', startedAt: 0 });
+    sendResponse({ ok: true });
+  } else if (msg.action === 'PING') {
     sendResponse({ ok: true });
   }
   return true;
