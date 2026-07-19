@@ -136,25 +136,33 @@ async function finishRecording() {
   }
 }
 
-const bridge = chrome.runtime.connect({ name: 'recorder-offscreen' });
+let bridge = null;
 
-bridge.onMessage.addListener(async (msg) => {
-  if (msg.action !== 'START_STREAM') return;
+function connectBridge() {
+  bridge = chrome.runtime.connect({ name: 'recorder-offscreen' });
 
-  try {
-    const tracks = msg.tracks || [];
-    if (!tracks.length) throw new Error('No media tracks received.');
-    await beginRecording(new MediaStream(tracks));
-    bridge.postMessage({ action: 'START_RESULT', ok: true });
-  } catch (err) {
-    broadcast({ status: 'error', error: err.message || 'Could not start recording.' });
-    bridge.postMessage({ action: 'START_RESULT', ok: false, error: err.message });
-  }
-});
+  bridge.onMessage.addListener(async (msg) => {
+    if (msg.action !== 'START_STREAM') return;
 
-bridge.onDisconnect.addListener(() => {
-  setTimeout(() => location.reload(), 300);
-});
+    try {
+      const tracks = msg.tracks || [];
+      if (!tracks.length) throw new Error('No media tracks received.');
+      await beginRecording(new MediaStream(tracks));
+      bridge?.postMessage({ action: 'START_RESULT', ok: true });
+    } catch (err) {
+      broadcast({ status: 'error', error: err.message || 'Could not start recording.' });
+      bridge?.postMessage({ action: 'START_RESULT', ok: false, error: err.message });
+    }
+  });
+
+  // SW may restart; reconnect to restore messaging. Recording keeps running.
+  bridge.onDisconnect.addListener(() => {
+    bridge = null;
+    setTimeout(connectBridge, 300);
+  });
+}
+
+connectBridge();
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== 'offscreen') return;

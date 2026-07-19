@@ -98,21 +98,28 @@ function sendTracksToOffscreen(tracks) {
     const finish = (fn) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       fn();
     };
 
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error('Recorder did not respond in time.')));
+    }, 8000);
+
     port.onMessage.addListener(function onReply(res) {
-      if (res?.action !== 'START_RESULT') return;
-      port.onMessage.removeListener(onReply);
-      if (res.ok) finish(() => resolve());
-      else finish(() => reject(new Error(res.error || 'Could not start background recorder.')));
+      if (res?.action === 'BRIDGE_READY') {
+        port.postMessage({ action: 'START_STREAM', tracks }, tracks);
+        return;
+      }
+      if (res?.action === 'START_RESULT') {
+        if (res.ok) finish(() => resolve());
+        else finish(() => reject(new Error(res.error || 'Could not start background recorder.')));
+      }
     });
 
     port.onDisconnect.addListener(() => {
       finish(() => reject(new Error(chrome.runtime.lastError?.message || 'Recorder connection lost.')));
     });
-
-    port.postMessage({ action: 'START_STREAM', tracks }, tracks);
   });
 }
 
@@ -155,5 +162,12 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 chrome.runtime.sendMessage({ type: 'GET_STATE' }, (state) => {
-  if (state) applyUpdate(state);
+  if (!state) return;
+  // 'picking' is transient; if we open into it, it's stale from a prior session.
+  if (state.status === 'picking') {
+    chrome.runtime.sendMessage({ target: 'offscreen', action: 'RESET' });
+    applyUpdate({ status: 'idle' });
+  } else {
+    applyUpdate(state);
+  }
 });

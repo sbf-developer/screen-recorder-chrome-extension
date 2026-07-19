@@ -42,15 +42,17 @@ function bridgePorts() {
   bridged = true;
 
   popupPort.onMessage.addListener((msg) => {
-    const tracks = msg.tracks || [];
-    offscreenPort.postMessage(msg, tracks);
+    if (!offscreenPort) return;
+    offscreenPort.postMessage(msg, msg.tracks || []);
   });
 
   offscreenPort.onMessage.addListener((msg) => {
-    if (msg.action === 'START_RESULT' && popupPort) {
-      popupPort.postMessage(msg);
-    }
+    if (popupPort) popupPort.postMessage(msg);
   });
+
+  try {
+    popupPort.postMessage({ action: 'BRIDGE_READY' });
+  } catch { /* popup gone */ }
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
