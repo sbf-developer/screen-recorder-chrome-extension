@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Screen Recorder</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="logo">
+        <svg class="logo-mark" width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <rect x="2" y="4" width="20" height="13" rx="2.5" stroke="currentColor" stroke-width="1.75"/>
+          <path d="M8 20h8" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+          <circle cx="12" cy="10.5" r="3.25" fill="#ef4444"/>
+        </svg>
+        <span>Screen Recorder</span>
+      </div>
+    </header>
+
+    <main class="main">
+      <section id="state-idle" class="state">
+        <p class="subtitle">Capture your screen and save as MP4</p>
+
+        <label class="toggle-row">
+          <span>Microphone</span>
+          <input type="checkbox" id="mic-toggle">
+          <span class="toggle"></span>
+        </label>
+
+        <button id="btn-start" class="btn btn-primary">
+          <span class="record-dot"></span>
+          Start Recording
+        </button>
+      </section>
+
+      <section id="state-recording" class="state hidden">
+        <div class="recording-indicator">
+          <span class="pulse"></span>
+          <span class="recording-label">Recording</span>
+        </div>
+        <div id="timer" class="timer">00:00</div>
+        <p class="subtitle recording-hint">Select a screen, window, or tab to record</p>
+        <button id="btn-stop" class="btn btn-danger">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="1"/>
+          </svg>
+          Stop
+        </button>
+      </section>
+
+      <section id="state-processing" class="state hidden">
+        <div class="spinner"></div>
+        <h2 id="processing-title">Processing</h2>
+        <p id="processing-subtitle" class="subtitle">Preparing MP4…</p>
+      </section>
+
+      <section id="state-done" class="state hidden">
+        <div class="success-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M20 6L9 17l-5-5"/>
+          </svg>
+        </div>
+        <h2>Saved</h2>
+        <p class="subtitle">MP4 downloaded to your computer</p>
+        <button id="btn-new" class="btn btn-secondary">Record Again</button>
+      </section>
+
+      <section id="state-error" class="state hidden">
+        <div class="error-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 8v4M12 16h.01"/>
+          </svg>
+        </div>
+        <h2>Error</h2>
+        <p id="error-message" class="subtitle">Could not complete recording</p>
+        <button id="btn-retry" class="btn btn-secondary">Try Again</button>
+      </section>
+    </main>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
