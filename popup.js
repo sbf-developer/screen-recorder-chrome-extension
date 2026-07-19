@@ -1,5 +1,6 @@
 const states = {
   idle: document.getElementById('state-idle'),
+  picking: document.getElementById('state-picking'),
   recording: document.getElementById('state-recording'),
   processing: document.getElementById('state-processing'),
   done: document.getElementById('state-done'),
@@ -17,71 +18,142 @@ function showState(name) {
   });
 }
 
-async function ensureOffscreen() {
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ['OFFSCREEN_DOCUMENT'],
-  });
-  if (contexts.length > 0) return;
+function applyUpdate(update) {
+  const status = update.status || 'idle';
 
-  await chrome.offscreen.createDocument({
-    url: 'offscreen.html',
-    reasons: ['DISPLAY_MEDIA', 'WORKERS'],
-    justification: 'Record screen and convert video to MP4',
+  if (status === 'picking') {
+    showState('picking');
+  } else if (status === 'recording') {
+    showState('recording');
+    if (update.timer) timerEl.textContent = update.timer;
+  } else if (status === 'processing') {
+    showState('processing');
+    if (update.progress) processingSubtitle.textContent = update.progress;
+  } else if (status === 'done') {
+    showState('done');
+  } else if (status === 'error') {
+    errorMessage.textContent = update.error || 'Something went wrong';
+    showState('error');
+  } else {
+    showState('idle');
+  }
+}
+
+async function mixAudio(screen, mic) {
+  const ctx = new AudioContext();
+  const dest = ctx.createMediaStreamDestination();
+  const sa = screen.getAudioTracks()[0];
+  if (sa) ctx.createMediaStreamSource(new MediaStream([sa])).connect(dest);
+  const ma = mic?.getAudioTracks()[0];
+  if (ma) ctx.createMediaStreamSource(new MediaStream([ma])).connect(dest);
+  return dest.stream;
+}
+
+async function buildCaptureStream(includeMic) {
+  const screenStream = await navigator.mediaDevices.getDisplayMedia({
+    video: { frameRate: { ideal: 30, max: 60 } },
+    audio: true,
   });
 
-  for (let i = 0; i < 10; i++) {
+  let micStream = null;
+  if (includeMic) {
     try {
-      await chrome.runtime.sendMessage({ target: 'offscreen', action: 'PING' });
-      return;
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      await new Promise((r) => setTimeout(r, 100));
+      micStream = null;
+    }
+  }
+
+  const video = screenStream.getVideoTracks()[0];
+  const hasSA = screenStream.getAudioTracks().length > 0;
+  const hasMA = micStream?.getAudioTracks().length > 0;
+  const tracks = [video];
+
+  if (hasSA && hasMA) {
+    const mixed = await mixAudio(screenStream, micStream);
+    tracks.push(...mixed.getAudioTracks());
+  } else if (hasMA) {
+    tracks.push(...micStream.getAudioTracks());
+  } else {
+    tracks.push(...screenStream.getAudioTracks());
+  }
+
+  screenStream.getAudioTracks().forEach((t) => {
+    if (!tracks.includes(t)) t.stop();
+  });
+  if (micStream) {
+    micStream.getAudioTracks().forEach((t) => {
+      if (!tracks.includes(t)) t.stop();
+    });
+  }
+
+  return tracks;
+}
+
+function sendTracksToOffscreen(tracks) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const port = chrome.runtime.connect({ name: 'recorder' });
+
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+
+    port.onMessage.addListener(function onReply(res) {
+      if (res?.action !== 'START_RESULT') return;
+      port.onMessage.removeListener(onReply);
+      if (res.ok) finish(() => resolve());
+      else finish(() => reject(new Error(res.error || 'Could not start background recorder.')));
+    });
+
+    port.onDisconnect.addListener(() => {
+      finish(() => reject(new Error(chrome.runtime.lastError?.message || 'Recorder connection lost.')));
+    });
+
+    port.postMessage({ action: 'START_STREAM', tracks }, tracks);
+  });
+}
+
+async function startRecording() {
+  chrome.runtime.sendMessage({ type: 'RECORDER_UPDATE', status: 'picking' });
+
+  let tracks = null;
+  try {
+    await chrome.runtime.sendMessage({ type: 'ENSURE_OFFSCREEN' });
+    tracks = await buildCaptureStream(micToggle.checked);
+    await sendTracksToOffscreen(tracks);
+  } catch (err) {
+    tracks?.forEach((t) => t.stop());
+    if (err.name === 'NotAllowedError') {
+      applyUpdate({ status: 'error', error: 'Screen sharing was cancelled.' });
+    } else {
+      applyUpdate({ status: 'error', error: err.message || 'Could not start recording.' });
     }
   }
 }
 
-async function sendToOffscreen(action, data = {}) {
-  await ensureOffscreen();
-  return chrome.runtime.sendMessage({ target: 'offscreen', action, ...data });
+function stopRecording() {
+  chrome.runtime.sendMessage({ target: 'offscreen', action: 'STOP' });
+  applyUpdate({ status: 'processing', progress: 'Preparing MP4…' });
 }
 
-document.getElementById('btn-start').addEventListener('click', async () => {
-  try {
-    await sendToOffscreen('START', { includeMic: micToggle.checked });
-    showState('recording');
-    timerEl.textContent = '00:00';
-  } catch (err) {
-    showError(err.message || 'Could not start recorder.');
-  }
-});
-
-document.getElementById('btn-stop').addEventListener('click', () => {
-  sendToOffscreen('STOP');
-  showState('processing');
-  processingSubtitle.textContent = 'Preparing MP4…';
-});
-
-document.getElementById('btn-new').addEventListener('click', () => showState('idle'));
-document.getElementById('btn-retry').addEventListener('click', () => showState('idle'));
-
-function showError(message) {
-  errorMessage.textContent = message;
-  showState('error');
+function resetToIdle() {
+  chrome.runtime.sendMessage({ target: 'offscreen', action: 'RESET' });
+  showState('idle');
 }
+
+document.getElementById('btn-start').addEventListener('click', startRecording);
+document.getElementById('btn-stop').addEventListener('click', stopRecording);
+document.getElementById('btn-cancel').addEventListener('click', resetToIdle);
+document.getElementById('btn-new').addEventListener('click', resetToIdle);
+document.getElementById('btn-retry').addEventListener('click', resetToIdle);
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type !== 'RECORDER_UPDATE') return;
-
-  if (msg.state === 'recording') {
-    showState('recording');
-    if (msg.timer) timerEl.textContent = msg.timer;
-  } else if (msg.state === 'processing') {
-    showState('processing');
-    if (msg.progress) processingSubtitle.textContent = msg.progress;
-  } else if (msg.state === 'done') {
-    showState('done');
-  } else if (msg.state === 'error') {
-    showError(msg.error || 'Something went wrong.');
-  }
+  if (msg.type === 'RECORDER_UPDATE') applyUpdate(msg);
 });
 
-showState('idle');
+chrome.runtime.sendMessage({ type: 'GET_STATE' }, (state) => {
+  if (state) applyUpdate(state);
+});

@@ -24,27 +24,24 @@ function chunk(type, data) {
 
 function createPNG(size) {
   const raw = Buffer.alloc(size * (1 + size * 4));
-  const pad = 2 * (size / 24);
 
   for (let y = 0; y < size; y++) {
     raw[y * (1 + size * 4)] = 0;
     for (let x = 0; x < size; x++) {
       const i = y * (1 + size * 4) + 1 + x * 4;
-      const fx = (x / size) * 24;
-      const fy = (y / size) * 24;
+      const fx = (x / size) * 18;
+      const fy = (y / size) * 18;
 
-      const inOuter = fx >= 3 && fx <= 21 && fy >= 4 && fy <= 17;
-      const inInner = fx >= 5 && fx <= 19 && fy >= 6 && fy <= 15;
-      const inDot = (fx - 12) ** 2 + (fy - 10) ** 2 <= 9;
-      const inStand = Math.abs(fx - 12) <= 1.5 && fy >= 17 && fy <= 19;
-      const inBase = Math.abs(fx - 12) <= 4.5 && fy >= 19 && fy <= 20;
+      const inFrame =
+        fx >= 1 && fx <= 17 && fy >= 3 && fy <= 13 &&
+        (fx <= 1.8 || fx >= 16.2 || fy <= 3.8 || fy >= 12.2);
+
+      const inDot = (fx - 9) ** 2 + (fy - 8) ** 2 <= 5.5;
 
       if (inDot) {
-        raw[i] = 239; raw[i + 1] = 68; raw[i + 2] = 68; raw[i + 3] = 255;
-      } else if (inInner) {
-        raw[i] = 255; raw[i + 1] = 255; raw[i + 2] = 255; raw[i + 3] = 255;
-      } else if (inOuter || inStand || inBase) {
-        raw[i] = 10; raw[i + 1] = 10; raw[i + 2] = 10; raw[i + 3] = 255;
+        raw[i] = 238; raw[i + 1] = 17; raw[i + 2] = 17; raw[i + 3] = 255;
+      } else if (inFrame) {
+        raw[i] = 17; raw[i + 1] = 17; raw[i + 2] = 17; raw[i + 3] = 255;
       } else {
         raw[i] = 0; raw[i + 1] = 0; raw[i + 2] = 0; raw[i + 3] = 0;
       }

@@ -10,8 +10,6 @@ const MIME_CANDIDATES = [
 
 let mediaRecorder = null;
 let recordedChunks = [];
-let screenStream = null;
-let micStream = null;
 let combinedStream = null;
 let timerInterval = null;
 let startTime = null;
@@ -21,105 +19,74 @@ function broadcast(update) {
   chrome.runtime.sendMessage({ type: 'RECORDER_UPDATE', ...update });
 }
 
+function setBadge(text) {
+  chrome.runtime.sendMessage({ type: 'SET_BADGE', text });
+}
+
 function getSupportedMimeType() {
   return MIME_CANDIDATES.find((t) => MediaRecorder.isTypeSupported(t)) || '';
 }
 
 function cleanupStreams() {
-  [combinedStream, screenStream, micStream].forEach((s) => {
-    s?.getTracks().forEach((t) => t.stop());
-  });
-  combinedStream = screenStream = micStream = null;
+  combinedStream?.getTracks().forEach((t) => t.stop());
+  combinedStream = null;
 }
 
-async function mixAudio(screen, mic) {
-  const ctx = new AudioContext();
-  const dest = ctx.createMediaStreamDestination();
-  const sa = screen.getAudioTracks()[0];
-  if (sa) ctx.createMediaStreamSource(new MediaStream([sa])).connect(dest);
-  const ma = mic?.getAudioTracks()[0];
-  if (ma) ctx.createMediaStreamSource(new MediaStream([ma])).connect(dest);
-  return dest.stream;
+function formatTimer(ms) {
+  const sec = Math.floor(ms / 1000);
+  return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 }
 
-async function buildStream(includeMic) {
-  screenStream = await navigator.mediaDevices.getDisplayMedia({
-    video: { frameRate: { ideal: 30, max: 60 } },
-    audio: true,
-  });
+function startTimerLoop() {
+  clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    if (!startTime) return;
+    broadcast({
+      status: 'recording',
+      timer: formatTimer(Date.now() - startTime),
+      startedAt: startTime,
+    });
+  }, 500);
+}
 
-  if (includeMic) {
-    try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      micStream = null;
-    }
-  }
+async function beginRecording(stream) {
+  selectedMimeType = getSupportedMimeType();
+  if (!selectedMimeType) throw new Error('No supported video format.');
 
-  const video = screenStream.getVideoTracks()[0];
-  const hasSA = screenStream.getAudioTracks().length > 0;
-  const hasMA = micStream?.getAudioTracks().length > 0;
+  combinedStream = stream;
+  recordedChunks = [];
 
-  if (hasSA && hasMA) {
-    const mixed = await mixAudio(screenStream, micStream);
-    combinedStream = new MediaStream([video, ...mixed.getAudioTracks()]);
-  } else if (hasMA) {
-    combinedStream = new MediaStream([video, ...micStream.getAudioTracks()]);
-  } else {
-    combinedStream = new MediaStream([video, ...screenStream.getAudioTracks()]);
-  }
-
-  video.addEventListener('ended', () => {
+  const video = stream.getVideoTracks()[0];
+  video?.addEventListener('ended', () => {
     if (mediaRecorder?.state === 'recording') stopRecording();
   });
 
-  return combinedStream;
-}
+  mediaRecorder = new MediaRecorder(stream, {
+    mimeType: selectedMimeType,
+    videoBitsPerSecond: 2_500_000,
+  });
 
-async function startRecording(includeMic) {
-  try {
-    selectedMimeType = getSupportedMimeType();
-    if (!selectedMimeType) throw new Error('No supported video format.');
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  };
 
-    const stream = await buildStream(includeMic);
-    recordedChunks = [];
-
-    mediaRecorder = new MediaRecorder(stream, {
-      mimeType: selectedMimeType,
-      videoBitsPerSecond: 2_500_000,
-    });
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) recordedChunks.push(e.data);
-    };
-
-    mediaRecorder.onstop = () => {
-      cleanupStreams();
-      finishRecording();
-    };
-
-    mediaRecorder.start(1000);
-    startTime = Date.now();
-    timerInterval = setInterval(() => {
-      const sec = Math.floor((Date.now() - startTime) / 1000);
-      const m = String(Math.floor(sec / 60)).padStart(2, '0');
-      const s = String(sec % 60).padStart(2, '0');
-      broadcast({ state: 'recording', timer: `${m}:${s}` });
-    }, 500);
-
-    broadcast({ state: 'recording', timer: '00:00' });
-  } catch (err) {
+  mediaRecorder.onstop = () => {
     cleanupStreams();
-    const msg = err.name === 'NotAllowedError'
-      ? 'Screen sharing was cancelled.'
-      : (err.message || 'Could not start recording.');
-    broadcast({ state: 'error', error: msg });
-  }
+    finishRecording();
+  };
+
+  mediaRecorder.start(1000);
+  startTime = Date.now();
+  startTimerLoop();
+  setBadge('REC');
+  broadcast({ status: 'recording', timer: '00:00', error: '', progress: '', startedAt: startTime });
 }
 
 function stopRecording() {
   clearInterval(timerInterval);
+  setBadge('');
   if (mediaRecorder?.state === 'recording') {
+    broadcast({ status: 'processing', progress: 'Preparing MP4…' });
     mediaRecorder.requestData();
     mediaRecorder.stop();
   }
@@ -127,13 +94,14 @@ function stopRecording() {
 
 async function finishRecording() {
   clearInterval(timerInterval);
+  setBadge('');
 
   if (recordedChunks.length === 0) {
-    broadcast({ state: 'error', error: 'No video captured.' });
+    broadcast({ status: 'error', error: 'No video captured.' });
     return;
   }
 
-  broadcast({ state: 'processing', progress: 'Preparing MP4…' });
+  broadcast({ status: 'processing', progress: 'Preparing MP4…' });
 
   try {
     const blob = new Blob(recordedChunks, { type: selectedMimeType });
@@ -143,7 +111,7 @@ async function finishRecording() {
     let mp4 = blob;
     if (!selectedMimeType.startsWith('video/mp4')) {
       mp4 = await convertToMp4(blob, (pct) => {
-        broadcast({ state: 'processing', progress: `Converting… ${pct}%` });
+        broadcast({ status: 'processing', progress: `Converting… ${pct}%` });
       });
     }
 
@@ -161,23 +129,48 @@ async function finishRecording() {
       });
     });
 
-    broadcast({ state: 'done' });
+    broadcast({ status: 'done', progress: '', error: '' });
   } catch (err) {
     console.error(err);
-    broadcast({ state: 'error', error: err.message || 'Failed to process recording.' });
+    broadcast({ status: 'error', error: err.message || 'Failed to process recording.' });
   }
 }
+
+const bridge = chrome.runtime.connect({ name: 'recorder-offscreen' });
+
+bridge.onMessage.addListener(async (msg) => {
+  if (msg.action !== 'START_STREAM') return;
+
+  try {
+    const tracks = msg.tracks || [];
+    if (!tracks.length) throw new Error('No media tracks received.');
+    await beginRecording(new MediaStream(tracks));
+    bridge.postMessage({ action: 'START_RESULT', ok: true });
+  } catch (err) {
+    broadcast({ status: 'error', error: err.message || 'Could not start recording.' });
+    bridge.postMessage({ action: 'START_RESULT', ok: false, error: err.message });
+  }
+});
+
+bridge.onDisconnect.addListener(() => {
+  setTimeout(() => location.reload(), 300);
+});
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== 'offscreen') return;
 
-  if (msg.action === 'START') {
-    startRecording(msg.includeMic);
-    sendResponse({ ok: true });
-  } else if (msg.action === 'STOP') {
+  if (msg.action === 'STOP') {
     stopRecording();
     sendResponse({ ok: true });
   } else if (msg.action === 'PING') {
+    sendResponse({ ok: true });
+  } else if (msg.action === 'RESET') {
+    cleanupStreams();
+    recordedChunks = [];
+    mediaRecorder = null;
+    clearInterval(timerInterval);
+    setBadge('');
+    broadcast({ status: 'idle', timer: '00:00', progress: '', error: '', startedAt: 0 });
     sendResponse({ ok: true });
   }
   return true;
