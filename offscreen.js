@@ -1,11 +1,11 @@
 import { convertToMp4 } from './converter.js';
 
 const MIME_CANDIDATES = [
+  'video/mp4;codecs=h264,aac',
+  'video/mp4',
   'video/webm;codecs=vp9,opus',
   'video/webm;codecs=vp8,opus',
   'video/webm',
-  'video/mp4;codecs=h264,aac',
-  'video/mp4',
 ];
 
 let mediaRecorder = null;
@@ -154,9 +154,25 @@ async function finishRecording() {
 
     let mp4 = blob;
     if (!selectedMimeType.startsWith('video/mp4')) {
-      mp4 = await convertToMp4(blob, (pct) => {
-        broadcast({ status: 'processing', progress: `Converting… ${pct}%` });
-      });
+      broadcast({ status: 'processing', progress: 'Loading encoder…' });
+      let convertPct = 0;
+      const convertStart = Date.now();
+      const convertInterval = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - convertStart) / 1000);
+        const label = convertPct > 0
+          ? `Converting… ${convertPct}%`
+          : `Converting… ${elapsed}s`;
+        broadcast({ status: 'processing', progress: label });
+      }, 1000);
+
+      try {
+        mp4 = await convertToMp4(blob, (pct) => {
+          convertPct = pct;
+          broadcast({ status: 'processing', progress: `Converting… ${pct}%` });
+        });
+      } finally {
+        clearInterval(convertInterval);
+      }
     }
 
     const url = URL.createObjectURL(mp4);

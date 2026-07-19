@@ -44,6 +44,10 @@ export async function convertToMp4(webmBlob, onProgress) {
 
   ffmpeg.on('progress', progressHandler);
 
+  ffmpeg.on('log', ({ message }) => {
+    console.log('[ffmpeg]', message);
+  });
+
   const inputName = 'input.webm';
   const outputName = 'output.mp4';
 
@@ -68,6 +72,7 @@ export async function convertToMp4(webmBlob, onProgress) {
     throw new Error(err.message || 'Could not convert to MP4.');
   } finally {
     ffmpeg.off('progress', progressHandler);
+    ffmpeg.off('log');
     try {
       await ffmpeg.deleteFile(inputName);
       await ffmpeg.deleteFile(outputName);
