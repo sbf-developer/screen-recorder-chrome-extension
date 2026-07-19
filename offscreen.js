@@ -153,15 +153,16 @@ async function finishRecording() {
     mediaRecorder = null;
 
     let mp4 = blob;
-    if (!selectedMimeType.startsWith('video/mp4')) {
-      broadcast({ status: 'processing', progress: 'Loading encoder…' });
+    const isMp4 = selectedMimeType.startsWith('video/mp4');
+    {
+      broadcast({ status: 'processing', progress: isMp4 ? 'Fixing audio…' : 'Loading encoder…' });
       let convertPct = 0;
       const convertStart = Date.now();
       const convertInterval = setInterval(() => {
         const elapsed = Math.floor((Date.now() - convertStart) / 1000);
         const label = convertPct > 0
           ? `Converting… ${convertPct}%`
-          : `Converting… ${elapsed}s`;
+          : `${isMp4 ? 'Fixing audio' : 'Converting'}… ${elapsed}s`;
         broadcast({ status: 'processing', progress: label });
       }, 1000);
 
@@ -169,7 +170,7 @@ async function finishRecording() {
         mp4 = await convertToMp4(blob, (pct) => {
           convertPct = pct;
           broadcast({ status: 'processing', progress: `Converting… ${pct}%` });
-        });
+        }, isMp4);
       } finally {
         clearInterval(convertInterval);
       }

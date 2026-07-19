@@ -32,7 +32,7 @@ async function getFFmpeg() {
   return loadPromise;
 }
 
-export async function convertToMp4(webmBlob, onProgress) {
+export async function convertToMp4(inputBlob, onProgress, isMp4 = false) {
   const ffmpeg = await getFFmpeg();
 
   const progressHandler = ({ progress }) => {
@@ -43,31 +43,37 @@ export async function convertToMp4(webmBlob, onProgress) {
   };
 
   ffmpeg.on('progress', progressHandler);
-
   ffmpeg.on('log', ({ message }) => {
     console.log('[ffmpeg]', message);
   });
 
-  const inputName = 'input.webm';
+  const inputName = isMp4 ? 'input.mp4' : 'input.webm';
   const outputName = 'output.mp4';
 
-  try {
-    await ffmpeg.writeFile(inputName, await fetchFile(webmBlob));
+  const audioArgs = ['-c:a', 'aac', '-b:a', '128k'];
+  const fastVideoArgs = ['-c:v', 'copy'];
+  const slowVideoArgs = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23'];
+  const muxArgs = ['-movflags', '+faststart', '-y', outputName];
 
-    await ffmpeg.exec([
-      '-i', inputName,
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-crf', '23',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-movflags', '+faststart',
-      '-y',
-      outputName,
-    ]);
-
+  async function run(videoArgs) {
+    await ffmpeg.exec(['-i', inputName, ...videoArgs, ...audioArgs, ...muxArgs]);
     const data = await ffmpeg.readFile(outputName);
     return new Blob([data], { type: 'video/mp4' });
+  }
+
+  try {
+    await ffmpeg.writeFile(inputName, await fetchFile(inputBlob));
+
+    // If input is already H.264 MP4, just copy video and transcode audio to AAC (fast).
+    // Fall back to full re-encode if the video stream isn't copyable.
+    if (isMp4) {
+      try {
+        return await run(fastVideoArgs);
+      } catch {
+        return await run(slowVideoArgs);
+      }
+    }
+    return await run(slowVideoArgs);
   } catch (err) {
     throw new Error(err.message || 'Could not convert to MP4.');
   } finally {
