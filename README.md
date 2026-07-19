@@ -4,6 +4,8 @@ A minimal Chrome extension to record your screen and download as MP4.
 
 ![Screen Recorder popup](docs/preview.png)
 
+![Recording saved](docs/done.png)
+
 ## Features
 
 - Record screen, window, or tab
