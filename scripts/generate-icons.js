@@ -24,24 +24,26 @@ function chunk(type, data) {
 
 function createPNG(size) {
   const raw = Buffer.alloc(size * (1 + size * 4));
+  const cx = size / 2;
+  const cy = size / 2;
+  const outerR = size * 0.46;
+  const innerR = size * 0.30;
 
   for (let y = 0; y < size; y++) {
     raw[y * (1 + size * 4)] = 0;
     for (let x = 0; x < size; x++) {
       const i = y * (1 + size * 4) + 1 + x * 4;
-      const fx = (x / size) * 18;
-      const fy = (y / size) * 18;
+      const dx = x - cx + 0.5;
+      const dy = y - cy + 0.5;
+      const dist = Math.sqrt(dx * dx + dy * dy);
 
-      const inFrame =
-        fx >= 1 && fx <= 17 && fy >= 3 && fy <= 13 &&
-        (fx <= 1.8 || fx >= 16.2 || fy <= 3.8 || fy >= 12.2);
-
-      const inDot = (fx - 9) ** 2 + (fy - 8) ** 2 <= 5.5;
-
-      if (inDot) {
-        raw[i] = 238; raw[i + 1] = 17; raw[i + 2] = 17; raw[i + 3] = 255;
-      } else if (inFrame) {
-        raw[i] = 17; raw[i + 1] = 17; raw[i + 2] = 17; raw[i + 3] = 255;
+      if (dist <= innerR) {
+        raw[i] = 225; raw[i + 1] = 30; raw[i + 2] = 30; raw[i + 3] = 255;
+      } else if (dist <= outerR) {
+        const edge = Math.min(dist - innerR, outerR - dist);
+        const aa = edge < 1 ? edge : 1;
+        raw[i] = 17; raw[i + 1] = 17; raw[i + 2] = 17;
+        raw[i + 3] = Math.round(255 * aa);
       } else {
         raw[i] = 0; raw[i + 1] = 0; raw[i + 2] = 0; raw[i + 3] = 0;
       }

@@ -36,8 +36,9 @@ export async function convertToMp4(webmBlob, onProgress) {
   const ffmpeg = await getFFmpeg();
 
   const progressHandler = ({ progress }) => {
-    if (onProgress && typeof progress === 'number') {
-      onProgress(Math.round(Math.min(progress, 1) * 100));
+    if (onProgress && typeof progress === 'number' && Number.isFinite(progress)) {
+      const clamped = Math.max(0, Math.min(progress, 1));
+      onProgress(Math.round(clamped * 100));
     }
   };
 

@@ -41,9 +41,13 @@ body {
   padding: 18px 22px 0;
 }
 
-.logo {
-  color: var(--fg);
+.logo-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--red);
   flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(225, 17, 17, 0.12);
 }
 
 .brand {
@@ -285,6 +289,29 @@ body {
   align-items: center;
   justify-content: center;
   margin-bottom: 18px;
+}
+
+.dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+}
+
+.dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg);
+  animation: bounce 1.1s var(--ease) infinite;
+}
+
+.dots span:nth-child(2) { animation-delay: 0.16s; }
+.dots span:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-5px); opacity: 1; }
 }
 
 .spinner {
